@@ -99,7 +99,7 @@ class Transformer(nn.Module):
         self.transformer = MaskedSequential(*thl)
         self.cls = config['cls']
         if self.cls:
-            self.cls_token = nn.Parameter(torch.randn((1,1,config['input_size']))) # think about whether this should require grad? it seems the ViT from jax adds it to params as well. 
+            self.cls_token = nn.Parameter(torch.randn((1,1,config['tb']["embedding_size"]))) # think about whether this should require grad? it seems the ViT from jax adds it to params as well. 
         self.in_proj = nn.Sequential(nn.Linear(config["input_size"], config['tb']["embedding_size"],bias=True), nn.GELU())
         self.out_proj = nn.Sequential(nn.Linear(config['tb']['embedding_size'], 1, bias=True))
         self.FinalLN = nn.LayerNorm(config['tb']['embedding_size'])
@@ -116,23 +116,26 @@ class Transformer(nn.Module):
     
     def forward(self, x, mask = None, coords = None):
         
-        
+        x = self.in_proj(x)
+
         if self.cls:
             cls_tokens = self.cls_token.expand([x.shape[0], 1, x.shape[2]]) # create a copy for each element in the batch
             x = torch.cat((cls_tokens,x), dim=1) ## add them to the sequence 
             if mask is not None: 
                 mask = torch.cat((torch.zeros([x.shape[0],1], dtype=torch.bool),mask), dim=1)
         
-
         ## Note, it seems standard to add a position embedding to the CLS token. The only reason I can see to do this is so that it is distributed
-        ## similarly to the other tokens, but we are just adding a parameter to a parameter here.
+        ## similarly to the other tokens, but we are just adding a parameter to a parameter here. I don't like the arbitrary decision of placing the 
+        ## CLS token first, I think with careful training, this should be fine. I am keeping it flexible here to allow both to happen.
 
-        ## I am making an assumption that coords here is compatible with the position encoding, and that it is already going to produce embeddings into the right dimension.
         if self.pos_enc:
+            ## I am making an assumption that coords here is compatible with the position encoding, and that it is already going to produce embeddings into the right dimension.
             pos_encoded = self.pos_enc(coords)
-            x = x + pos_encoded
-        
-        x = self.in_proj(x)
+            if self.pos_enc.cls_token:
+                x = x + pos_encoded
+            else:
+                x[:,1:,:] = x[:,1:,:] + pos_encoded
+
         x = self.transformer(x, mask=mask)
         if self.cls:
             x = x[:,0,:]
